@@ -40,7 +40,7 @@ set.seed(123)
 
 # Define provinces and years
 provinces <- paste0("Prov", 1:10)
-years <- 2017:2021
+years <- as.factor(2017:2021)
 
 # Generate synthetic dataset
 df <- expand_grid(Province = provinces, Year = years) %>% 
@@ -141,5 +141,167 @@ library(GGally)
 df %>%
   select(GDP, Unemployment, Inflation, Education, Urbanization, Expenditure) %>%
   ggpairs(title = "Correlation matrix of key variables")
+```
+
+### Model creation
+```{r}
+# Example formula
+# - log(Expenditure) as outcome
+# - GDP, Unemployment, Inflation, Education, Urbanization as predictors
+# - Province as hierarchical random intercept
+# - Year as fixed effect (categorical)
+
+df_std <- df %>% 
+  mutate(across(c(GDP, Unemployment, Inflation, Education, Urbanization),
+                ~ scale(.) %>% as.numeric(),
+                .names = "{.col}_std"))
+
+library(brms)
+
+formula_brm <- bf(
+  log(Expenditure) ~ GDP_std + Unemployment_std + Inflation_std + Education_std + Urbanization_std + Year + (1| Province)
+  )
+
+# Priors (weakly informative)
+priors <- c(
+  prior(normal(0, 1), class = "b"), # coefficients
+  prior(student_t(3, 0, 2), class = "Intercept"), # global intercept
+  prior(exponential(1), class = "sd"), # random intercept SD
+  prior(exponential(1), class = "sigma") # residual SD
+)
+
+# Fit the model
+fit <- brm(
+  formula = formula_brm,
+  data = df_std,
+  prior = priors,
+  family = gaussian(),
+  chains = 4, cores = 4, iter = 2000, seed = 123
+)
+```
+
+```{r}
+library(tidybayes)
+
+# Posterior of coefficients
+fit %>% 
+  spread_draws(b_Intercept, b_GDP_std, b_Unemployment_std,
+               b_Inflation_std, b_Education_std, b_Urbanization_std) %>% 
+  gather(term, estimate, - .chain, - .iteration, - .draw) %>% 
+  ggplot(aes(x = estimate, y = term, fill = stat(x > 0))) +
+  stat_halfeye(point_interval = median_qi, .width = 0.95) +
+  scale_fill_manual(values = c("red", "blue")) +
+  labs(title = "Posterior distributions of coefficients",
+       x = "Estimate", y = "Predictor") +
+  theme_minimal()
+
+# Posterior predictive check
+pp_check(fit, type = "dens_overlay") +
+  labs(title = "Posterior Predictive Check")
+```
+
+```{r}
+posterior_unemp <- fit %>% 
+  spread_draws(b_Unemployment_std)
+
+# Quick summary
+posterior_unemp %>% 
+  mean_qi(b_Unemployment_std, .width = 0.95)
+
+posterior_unemp %>%
+  ggplot(aes(x = b_Unemployment_std)) +
+  stat_halfeye(fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Posterior distribution of unemployment effect",
+       x = "Effect of 1 SD increase in Unemployment on log(Expenditure)",
+       y = "") +
+  theme_minimal()
+```
+
+```{r}
+posterior_unemp %>%
+  mutate(perc_change = 100 * (exp(b_Unemployment_std) - 1)) %>%
+  mean_qi(perc_change, .width = 0.95)
+```
+
+
+```{r}
+# Conditional effects for Unemployment
+# Compute conditional effects for Unemployment
+cond_eff <- conditional_effects(fit, effects = "Unemployment_std") %>%
+  pluck("Unemployment_std") %>%
+  as_tibble() %>%
+  mutate(
+    estimate_Exp = exp(estimate__),
+    lower_Exp = exp(lower__),
+    upper_Exp = exp(upper__)
+  )
+
+# Plot with data points
+ggplot() +
+  # Model prediction ribbon
+  geom_ribbon(data = cond_eff, 
+              aes(x = effect1__, ymin = lower_Exp, ymax = upper_Exp), 
+              alpha = 0.2, fill = "steelblue") +
+  # Model prediction line
+  geom_line(data = cond_eff, 
+            aes(x = effect1__, y = estimate_Exp), 
+            color = "steelblue", size = 1) +
+  # Original data points
+  geom_point(data = df_std, 
+             aes(x = Unemployment_std, y = Expenditure), 
+             color = "black", size = 1.5, alpha = 0.6) +
+  labs(
+    title = "Predicted Household Expenditure vs Standardized Unemployment",
+    x = "Standardized Unemployment",
+    y = "Expenditure"
+  ) +
+  theme_minimal()
+```
+### See whether different province has different effect of unemployment towards expenditure
+```{r}
+# Random intercept + random slope for Unemployment by Province
+formula_brm_prov <- bf(
+  log(Expenditure) ~ GDP_std + Unemployment_std + Inflation_std +
+                     Education_std + Urbanization_std +
+                     (1 + Unemployment_std | Province) + Year
+)
+
+fit_prov <- brm(
+  formula = formula_brm_prov,
+  data = df_std,
+  prior = priors,  # same as before
+  family = gaussian(),
+  chains = 2, cores = 2, iter = 2000, seed = 123
+)
+```
+
+```{r}
+# Extract overall slope
+overall_slope <- fixef(fit_prov) %>%
+  as_tibble(rownames = "term") %>%
+  filter(term == "b_Unemployment_std") %>%
+  pull(Estimate)
+
+# Rename columns for ggplot
+ranef_plot <- ranef_unemp %>%
+  rename(
+    xmin = Q2.5.Unemployment_std,
+    xmax = Q97.5.Unemployment_std,
+    x = Estimate.Unemployment_std
+  )
+
+# Plot
+ggplot(ranef_plot, aes(x = Province, y = x)) +
+  geom_errorbar(aes(ymin = xmin, ymax = xmax), width = 0.2, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_hline(yintercept = overall_slope, linetype = "dashed", color = "red") +
+  labs(
+    title = "Province-specific effect of Unemployment on log(Expenditure)",
+    x = "Province",
+    y = "Slope estimate (log scale)"
+  ) +
+  theme_minimal() +
+  coord_flip()  # optional: flip axes to mimic horizontal bars
 ```
 
