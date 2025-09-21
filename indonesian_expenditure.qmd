@@ -1,0 +1,145 @@
+---
+title: "Indonesian Expenditure"
+format: html
+---
+
+```{r}
+# Install packages if you haven't already
+# install.packages(c("dagitty", "ggdag", "tidyverse"))
+
+library(dagitty)
+library(ggdag)
+library(tidyverse)
+
+# Define the DAG
+dag <- dagitty("
+dag {
+  Education -> GDP
+  Education -> Unemployment
+  Urbanization -> GDP
+  Urbanization -> Unemployment
+  GDP -> Expenditure
+  Unemployment -> Expenditure
+  Inflation -> Expenditure
+
+  Province [exposure]
+  Year [exposure]
+}
+")
+
+# Visualize DAG using ggdag
+ggdag(dag, text = TRUE, use_labels = "name") +
+  theme_minimal() +
+  labs(title = "Bayesian Hierarchical Model DAG for Household Expenditure")
+```
+### Synthetic Date Generation
+```{r}
+library(tidyverse)
+
+set.seed(123)
+
+# Define provinces and years
+provinces <- paste0("Prov", 1:10)
+years <- 2017:2021
+
+# Generate synthetic dataset
+df <- expand_grid(Province = provinces, Year = years) %>% 
+  
+  # Upstream confounders
+  mutate(
+    Education = rnorm(n(), mean = 12, sd = 2), # avg years of schooling
+    Urbanization = rnorm(n(), mean = 65, sd = 15) # % urban population
+  ) %>% 
+  
+  # Mediators
+  mutate(
+    GDP = 5e6 + 2e5 * Education + 3e4 * Urbanization + rnorm(n(), 0, 2e5),
+    Unemployment = 7 - 0.2 * Education - 0.05 * Urbanization + 0.000001 * GDP + rnorm(n(), 0, 1)
+  ) %>% 
+  
+  # Exogenous variable
+  mutate(Inflation = rnorm(n(), mean = 2, sd = 0.5)) %>% 
+  
+  # Province random effect
+  group_by(Province) %>% 
+  mutate(ProvinceEffect = rnorm(1, 0, 0.2)) %>% 
+  ungroup() %>% 
+  
+  # Outcome variable: log-linear model
+  mutate(
+    logExpenditure = 8 + 0.0000003 * GDP - 0.05 * Unemployment + 0.02 * Inflation + ProvinceEffect + rnorm(n(), 0, 0.1),
+    Expenditure = exp(logExpenditure)
+  )
+
+# Preview the data
+df %>% slice(1:10)
+```
+
+## Numerical Descriptive Statistics
+```{r}
+library(tidyverse)
+
+# Summary statistics for all numeric variables
+df %>%
+  select(GDP, Unemployment, Inflation, Education, Urbanization, Expenditure) %>%
+  summary()
+
+# Grouped by Province
+df %>%
+  group_by(Province) %>%
+  summarise(
+    mean_Expenditure = mean(Expenditure),
+    sd_Expenditure = sd(Expenditure),
+    mean_GDP = mean(GDP),
+    mean_Unemployment = mean(Unemployment),
+    mean_Inflation = mean(Inflation),
+    mean_Education = mean(Education),
+    mean_Urbanization = mean(Urbanization)
+  )
+```
+## Visual Descriptive Statistics
+```{r}
+library(ggplot2)
+
+# Histogram of household expenditure
+ggplot(df, aes(x = Expenditure)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(title = "Distribution of Household Expenditure", x = "Expenditure", y = "Count") +
+  theme_minimal()
+
+# Boxplot of Expenditure by Province
+ggplot(df, aes(x = Province, y = Expenditure)) +
+  geom_boxplot(fill = "lightgreen") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Household Expenditure by Province", y = "Expenditure") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Scatter plot: GDP vs Expenditure
+ggplot(df, aes(x = GDP, y = Expenditure)) +
+  geom_point(aes(color = Province), size = 2) +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "GDP vs Household Expenditure", x = "GDP per Capita", y = "Expenditure") +
+  theme_minimal()
+
+# Scatter plot: Unemployment vs Expenditure
+ggplot(df, aes(x = Unemployment, y = Expenditure)) +
+  geom_point(aes(color = Province), size = 2) +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Unemployment vs Household Expenditure", x = "Unemployment Rate (%)", y = "Expenditure") +
+  theme_minimal()
+```
+
+## Correlation Matrics
+```{r}
+library(GGally)
+
+df %>%
+  select(GDP, Unemployment, Inflation, Education, Urbanization, Expenditure) %>%
+  ggpairs(title = "Correlation matrix of key variables")
+```
+
